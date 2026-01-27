@@ -70,12 +70,7 @@ def get_weather_for_date(board, date_obj):
         response = None
 
     if response is None:
-        return {
-            "snowfall_overnight_cm": 0,
-            "snowfall_24h_cm": 0,
-            "temp_min_overnight_c": 0,
-            "wind_gust_overnight_kmh": 0
-        }
+        return None
 
     hourly = response.Hourly()
 
@@ -115,8 +110,10 @@ def get_weather_for_date(board, date_obj):
 
 school_boards = ["TDSB", "DPCDSB", "PDSB", "YRDSB", "HCDSB"]
 
-start_year = 2021
-end_year = 2022
+
+start_year = 2014
+end_year = 2025
+
 
 all_rows = []
 for year in range(start_year, end_year + 1):
@@ -156,11 +153,13 @@ print(df.head(10))
 
 for idx, row in df.iterrows():
     weather = get_weather_for_date(row["school_board"], row["date"])
+    if weather == None:
+        continue
     for col in weather_cols:
         df.at[idx, col] = weather[col]
     
     #time.sleep(1)
-    print(f"Calculating: Row {idx}")
+    print(f"Calculating: Row {idx} (DATE: {row["date"]})")
 
 df.to_csv("snow_day_dataset.csv", index=False)
 
