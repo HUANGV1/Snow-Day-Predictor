@@ -5,9 +5,13 @@ import requests
 import os 
 from dotenv import load_dotenv
 import time
+import openmeteo_requests
+import requests_cache
+from retry_requests import retry
 
 load_dotenv()
-API_KEY = os.getenv("OPEN_WEATHER_KEY")
+#API_KEY = os.getenv("OPEN_WEATHER_KEY")
+start_time = time.perf_counter()
 
 LAT_LON_PER_BOARD = {
     "TDSB": (43.76711025624156, -79.41292393574588),
@@ -16,6 +20,10 @@ LAT_LON_PER_BOARD = {
     "YRDSB": (43.999344220892226, -79.47091599543542),
     "HCDSB": (43.34191676866363, -79.80310709490871)
 }
+
+cache_session = requests_cache.CachedSession('.cache', expire_after=-1)
+retry_session = retry(cache_session, retries=5, backoff_factor=0.2)
+openmeteo_client = openmeteo_requests.Client(session=retry_session)
 
 # API expects UNIX timestamps
 def unix_time(dt):
@@ -44,16 +52,24 @@ def get_winter_school_dates(start_year):
 def get_weather_for_date(board, date_obj):
     lat, long = LAT_LON_PER_BOARD[board]
 
-    # Start and end of the day
-    start = unix_time(datetime(date_obj.year, date_obj.month, date_obj.day, 0, 0))
-    end = unix_time(datetime(date_obj.year, date_obj.month, date_obj.day, 23, 59))
+    url = "https://archive-api.open-meteo.com/v1/archive"
 
-    url = f"https://history.openweathermap.org/data/2.5/history/city?lat={lat}&lon={long}&type=hour&start={start}&end={end}&appid={API_KEY}&units=metric"
-    
-    resp = requests.get(url)
+    params = {
+        "latitude": lat,
+        "longitude": long,
+        "start_date": date_obj.isoformat(),
+        "end_date": date_obj.isoformat(),
+        "hourly": ["temperature_2m", "snowfall", "precipitation", "wind_gusts_10m"]
+    }
 
-    if resp.status_code != 200:
-        print("API failed:", resp.text)
+    try:
+        responses = openmeteo_client.weather_api(url, params=params)
+        response = responses[0] if responses else None
+    except Exception as exc:
+        print("API failed:", exc)
+        response = None
+
+    if response is None:
         return {
             "snowfall_overnight_cm": 0,
             "snowfall_24h_cm": 0,
@@ -61,43 +77,46 @@ def get_weather_for_date(board, date_obj):
             "wind_gust_overnight_kmh": 0
         }
 
-    data = resp.json()
+    hourly = response.Hourly()
 
-    # Initialize features
+    hourly_index = pd.date_range(
+        start=pd.to_datetime(hourly.Time(), unit="s", utc=True),
+        end=pd.to_datetime(hourly.TimeEnd(), unit="s", utc=True),
+        freq=pd.Timedelta(seconds=hourly.Interval()),
+        inclusive="left"
+    )
 
-    snowfall_24h = 0
-    snowfall_overnight = 0
-    temp_min_overnight = float("inf")
-    wind_gust_overnight = 0
+    hourly_data = pd.DataFrame(
+        data={
+            "timestamp": hourly_index,
+            "temperature_2m": hourly.Variables(0).ValuesAsNumpy(),
+            "snowfall_mm": hourly.Variables(1).ValuesAsNumpy(),
+            "precipitation_mm": hourly.Variables(2).ValuesAsNumpy(),
+            "wind_gusts_10m": hourly.Variables(3).ValuesAsNumpy(),
+        }
+    )
 
-    for hour in data.get("list", []):
-        dt_hour = datetime.utcfromtimestamp(hour["dt"]) # convert tiem stamp to datetime
-        snow = hour.get("snow", {}).get("1h", 0) #snow in the last hour (mm)
-        wind_speed = hour.get("wind", {}).get("speed", 0) * 3.6 # m/s to km/h
-        temp_min = hour.get("main", {}).get("temp_min", 0)
+    overnight_hours = hourly_data.loc[hourly_data["timestamp"].dt.hour <= 6]
 
-        snowfall_24h+=snow
-
-        # Consider overnight hours
-
-        if 0<= dt_hour.hour <= 6:
-            snowfall_overnight += snow
-            temp_min_overnight = min(temp_min_overnight, temp_min)
-            wind_gust_overnight = max(wind_gust_overnight, wind_speed)
+    snowfall_24h_cm = float(hourly_data["snowfall_mm"].sum()) / 10
+    snowfall_overnight_cm = float(overnight_hours["snowfall_mm"].sum()) / 10 if not overnight_hours.empty else 0
+    temp_min_overnight_c = float(overnight_hours["temperature_2m"].min()) if not overnight_hours.empty else 0
+    wind_gust_overnight_kmh = float(overnight_hours["wind_gusts_10m"].max()) if not overnight_hours.empty else 0
 
     return {
-        "snowfall_overnight_cm": snowfall_overnight / 10,
-        "snowfall_24h_cm": snowfall_24h / 10,
-        "temp_min_overnight_c": temp_min_overnight,
-        "wind_gust_overnight_kmh": wind_gust_overnight
+        "snowfall_overnight_cm": snowfall_overnight_cm,
+        "snowfall_24h_cm": snowfall_24h_cm,
+        "temp_min_overnight_c": temp_min_overnight_c,
+        "wind_gust_overnight_kmh": wind_gust_overnight_kmh
     }
 
 
 # Creating a base DataFrame
 
-school_boards = ["PDSB"]
+school_boards = ["TDSB", "DPCDSB", "PDSB", "YRDSB", "HCDSB"]
 
-desired_date=2014
+# NEED TO LOOP THROUGH 2014 TO 2026
+desired_date=2021
 
 dates = get_winter_school_dates(desired_date)
 
@@ -136,7 +155,10 @@ for idx, row in df.iterrows():
     for col in weather_cols:
         df.at[idx, col] = weather[col]
     
-    # time.sleep(1)
+    #time.sleep(1)
     print(f"DEBUG{idx}")
 
 df.to_csv("snow_day_dataset.csv", index=False)
+
+total_seconds = time.perf_counter() - start_time
+print(f"Run completed in {total_seconds:.2f} seconds (~{total_seconds/60:.2f} minutes)")
