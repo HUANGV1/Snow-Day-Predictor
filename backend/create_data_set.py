@@ -115,12 +115,16 @@ def get_weather_for_date(board, date_obj):
 
 school_boards = ["TDSB", "DPCDSB", "PDSB", "YRDSB", "HCDSB"]
 
-# NEED TO LOOP THROUGH 2014 TO 2026
-desired_date=2021
+start_year = 2021
+end_year = 2022
 
-dates = get_winter_school_dates(desired_date)
+all_rows = []
+for year in range(start_year, end_year + 1):
+    for d in get_winter_school_dates(year):
+        for sb in school_boards:
+            all_rows.append((d, sb))
 
-df = pd.DataFrame([(d, sb) for d in dates for sb in school_boards], columns=["date", "school_board"])
+df = pd.DataFrame(all_rows, columns=["date", "school_board"])
 
 # Add closed column
 closure_dates_per_board=closures_per_board()
@@ -156,7 +160,7 @@ for idx, row in df.iterrows():
         df.at[idx, col] = weather[col]
     
     #time.sleep(1)
-    print(f"DEBUG{idx}")
+    print(f"Calculating: Row {idx}")
 
 df.to_csv("snow_day_dataset.csv", index=False)
 
