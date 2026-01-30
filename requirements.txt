@@ -1,0 +1,11 @@
+fastapi
+uvicorn
+pydantic
+joblib
+pandas
+scikit-learn
+requests
+python-dotenv
+openmeteo-requests
+requests-cache
+retry-requests
